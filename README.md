@@ -22,6 +22,10 @@ after entering the chart editor interface, clicking `Code`, pasting your code in
 
 ![chart list](sample-2.jpg)
 
+If nothing shows up, go to `Data` tab, `File` dropdown menu and click `Sample Data`:
+
+![chart list](sample-3.jpg)
+
 For any errors, check dev console and ask your LLM code generator to fix it. Iterate above until all errors are gone.
 
 

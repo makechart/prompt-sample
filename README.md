@@ -12,7 +12,9 @@ Use the provided `prompt.md` as your system prompt in any LLM code generator, an
 
     Please generate a sankey chart in d3.js, with data on power generation and its corresponding types/sources as sample data as its sample data.
 
-in [makechart.io](makechart.io), randomly pick a chart from its preset:
+You can also use codes available under `examples` folder for a quick test.
+
+Then, in [makechart.io](makechart.io), randomly pick a chart from its preset:
 
 ![chart list](sample-1.jpg)
 
@@ -20,4 +22,6 @@ after entering the chart editor interface, clicking `Code`, pasting your code in
 
 ![chart list](sample-2.jpg)
 
-For any errors, check dev console and ask your LLM code generator to fix it.
+For any errors, check dev console and ask your LLM code generator to fix it. Iterate above until all errors are gone.
+
+

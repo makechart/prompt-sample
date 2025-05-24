@@ -1,0 +1,269 @@
+<div>
+<script type="@plotdb/block">
+module.exports = {
+  pkg: {
+    extend: {ns: "local", name: "chartbase", path: "index.html", version: "main"},
+    dependencies: [
+      {url: "https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"},
+      {url: "https://cdn.jsdelivr.net/npm/d3-contour@4"},
+      {url: "https://cdn.jsdelivr.net/npm/ldcolor@1.0.0/index.min.js"}
+    ]
+  },
+  init: function(opt) {
+    var d3 = opt.ctx.d3;
+    var ldcolor = opt.ctx.ldcolor;
+    var root = opt.root;
+    var svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    root.appendChild(svg);
+    
+    opt.pubsub.fire("init", {mod: {
+      config: {
+        pointSize: {name: "點大小", type: "number", min: 1, max: 10, default: 3, step: 0.5},
+        pointOpacity: {name: "點透明度", type: "number", min: 0, max: 1, default: 0.7, step: 0.1},
+        pointColor: {name: "點顏色", type: "color", default: "#1f77b4"},
+        contourColor: {name: "等高線顏色", type: "color", default: "#ff7f0e"},
+        contourWidth: {name: "等高線寬度", type: "number", min: 0.5, max: 5, default: 1, step: 0.5},
+        contourOpacity: {name: "等高線透明度", type: "number", min: 0, max: 1, default: 0.5, step: 0.1},
+        contourThresholds: {name: "等高線數量", type: "number", min: 5, max: 30, default: 10, step: 1},
+        contourBandwidth: {name: "等高線平滑度", type: "number", min: 5, max: 50, default: 20, step: 1},
+        palette: {name: "色盤", type: "palette", default: {colors: ["#f7fbff", "#deebf7", "#c6dbef", "#9ecae1", "#6baed6", "#4292c6", "#2171b5", "#08519c", "#08306b"]}}
+      },
+      dimension: {
+        x: {},
+        y: {},
+        value: {multiple: true}
+      },
+      init: function() {
+        this.svg = svg;
+        this.g = d3.select(this.svg).append("g");
+        this.contourG = this.g.append("g").attr("class", "contours");
+        this.pointsG = this.g.append("g").attr("class", "points");
+        this.axisG = this.g.append("g").attr("class", "axes");
+        this.xAxisG = this.axisG.append("g").attr("class", "x-axis");
+        this.yAxisG = this.axisG.append("g").attr("class", "y-axis");
+      },
+      sample: function() {
+        // Generate clustered random data
+        var clusters = [
+          {x: 25, y: 25, count: 100},
+          {x: 75, y: 75, count: 150},
+          {x: 30, y: 70, count: 80}
+        ];
+        
+        var data = [];
+        clusters.forEach(function(cluster) {
+          for (var i = 0; i < cluster.count; i++) {
+            // Add random offset from cluster center with normal-like distribution
+            var offset = function() { return (Math.random() + Math.random() + Math.random() - 1.5) * 15; };
+            data.push({
+              x: Math.max(0, Math.min(100, cluster.x + offset())),
+              y: Math.max(0, Math.min(100, cluster.y + offset())),
+              value: Math.random() * 10
+            });
+          }
+        });
+        
+        return {
+          raw: data,
+          binding: {
+            x: {key: "x"},
+            y: {key: "y"},
+            value: [{key: "value"}]
+          }
+        };
+      },
+      bind: function() {
+        // Ensure we have data to work with
+        if (!this.data || !this.data.length) {
+          var sample = this.sample();
+          this.data = sample.raw.map(function(d) {
+            return {x: d.x, y: d.y, value: [d.value]};
+          });
+        }
+        
+        // Prepare data for contour generation
+        this.parsed = {
+          points: this.data.map(function(d) {
+            return {
+              x: +d.x,
+              y: +d.y,
+              value: Array.isArray(d.value) ? d.value[0] : d.value
+            };
+          })
+        };
+      },
+      resize: function() {
+        var margin = {top: 40, right: 40, bottom: 60, left: 60};
+        
+        d3.select(this.svg)
+          .attr("width", this.box.width)
+          .attr("height", this.box.height);
+          
+        // Update scales based on new dimensions
+        this.xScale = d3.scaleLinear()
+          .domain([0, 100])
+          .range([margin.left, this.box.width - margin.right]);
+          
+        this.yScale = d3.scaleLinear()
+          .domain([0, 100])
+          .range([this.box.height - margin.bottom, margin.top]);
+          
+        // Create axes
+        this.xAxis = d3.axisBottom(this.xScale);
+        this.yAxis = d3.axisLeft(this.yScale);
+      },
+      render: function() {
+        var that = this;
+        var points = this.parsed.points;
+        
+        // Clear previous elements
+        this.contourG.selectAll("*").remove();
+        this.pointsG.selectAll("*").remove();
+        
+        // Draw axes
+        this.xAxisG
+          .attr("transform", "translate(0," + (this.box.height - 60) + ")")
+          .call(this.xAxis)
+          .selectAll("text")
+          .style("font-size", "12px");
+          
+        this.yAxisG
+          .attr("transform", "translate(" + 60 + ",0)")
+          .call(this.yAxis)
+          .selectAll("text")
+          .style("font-size", "12px");
+          
+        // Add axis labels
+        this.axisG.selectAll(".x-label").remove();
+        this.axisG.selectAll(".y-label").remove();
+        
+        this.axisG.append("text")
+          .attr("class", "x-label")
+          .attr("text-anchor", "middle")
+          .attr("x", this.xScale(50))
+          .attr("y", this.box.height - 20)
+          .text("X 軸");
+          
+        this.axisG.append("text")
+          .attr("class", "y-label")
+          .attr("text-anchor", "middle")
+          .attr("transform", "rotate(-90)")
+          .attr("x", -this.yScale(50))
+          .attr("y", 20)
+          .text("Y 軸");
+          
+        // Generate contours
+        var densityData = d3.contourDensity()
+          .x(function(d) { return that.xScale(d.x); })
+          .y(function(d) { return that.yScale(d.y); })
+          .size([this.box.width, this.box.height])
+          .bandwidth(this.cfg.contourBandwidth)
+          .thresholds(this.cfg.contourThresholds)
+          (points);
+          
+        // Find min and max values for color scale
+        var extent = d3.extent(densityData, function(d) { return d.value; });
+        
+        // Create color scale for contours with gradient based on height
+        var colorScale = d3.scaleSequential()
+          .domain(extent)
+          .interpolator(d3.interpolateRgbBasis(
+            this.cfg.palette.colors.map(function(c) { return ldcolor.hex(c); })
+          ));
+          
+        // Draw contours with gradient fill
+        this.contourG.selectAll("path")
+          .data(densityData)
+          .enter()
+          .append("path")
+          .attr("d", d3.geoPath())
+          .attr("fill", function(d) { return colorScale(d.value); })
+          .attr("stroke", this.cfg.contourColor)
+          .attr("stroke-width", this.cfg.contourWidth)
+          .attr("stroke-opacity", this.cfg.contourOpacity)
+          .attr("stroke-linejoin", "round");
+          
+        // Add color legend
+        var legendWidth = 20;
+        var legendHeight = 150;
+        var legendX = this.box.width - 50;
+        var legendY = (this.box.height - legendHeight) / 2;
+        
+        // Remove existing legend
+        this.g.selectAll(".legend").remove();
+        
+        // Create legend group
+        var legend = this.g.append("g")
+          .attr("class", "legend")
+          .attr("transform", "translate(" + legendX + "," + legendY + ")");
+          
+        // Create gradient for legend
+        var gradient = legend.append("defs")
+          .append("linearGradient")
+          .attr("id", "contour-gradient")
+          .attr("x1", "0%")
+          .attr("x2", "0%")
+          .attr("y1", "0%")
+          .attr("y2", "100%");
+          
+        // Add color stops to gradient
+        var colorStops = d3.range(0, 1.01, 0.1);
+        colorStops.forEach(function(stop) {
+          gradient.append("stop")
+            .attr("offset", (1 - stop) * 100 + "%")
+            .attr("stop-color", colorScale(extent[0] + stop * (extent[1] - extent[0])));
+        });
+        
+        // Draw legend rectangle with gradient
+        legend.append("rect")
+          .attr("width", legendWidth)
+          .attr("height", legendHeight)
+          .style("fill", "url(#contour-gradient)");
+          
+        // Add legend title
+        legend.append("text")
+          .attr("x", legendWidth / 2)
+          .attr("y", -10)
+          .attr("text-anchor", "middle")
+          .style("font-size", "12px")
+          .text("密度");
+          
+        // Add legend ticks
+        var legendScale = d3.scaleLinear()
+          .domain(extent)
+          .range([legendHeight, 0]);
+          
+        var legendAxis = d3.axisRight(legendScale)
+          .ticks(5)
+          .tickSize(5);
+          
+        legend.append("g")
+          .attr("transform", "translate(" + legendWidth + ",0)")
+          .call(legendAxis)
+          .selectAll("text")
+          .style("font-size", "10px");
+          
+        // Draw points
+        this.pointsG.selectAll("circle")
+          .data(points)
+          .enter()
+          .append("circle")
+          .attr("cx", function(d) { return that.xScale(d.x); })
+          .attr("cy", function(d) { return that.yScale(d.y); })
+          .attr("r", this.cfg.pointSize)
+          .attr("fill", this.cfg.pointColor)
+          .attr("opacity", this.cfg.pointOpacity);
+      },
+      destroy: function() {
+        // Clean up any resources
+        if (this.svg) {
+          while (this.svg.firstChild) {
+            this.svg.removeChild(this.svg.firstChild);
+          }
+        }
+      }
+    }});
+  }
+};
+</script>
+</div>

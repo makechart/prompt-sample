@@ -15,6 +15,8 @@ module.exports = {
     var root = opt.root;
     var data = null;
     var timePoints = [];
+    var timeIndices = {}; // Map time values to their sorted indices
+    var originalTimes = []; // Original time values in sorted order
     var animationRunning = false;
     var sankey = null;
     var svg = null;
@@ -33,29 +35,33 @@ module.exports = {
     
     // New animation variables
     var animationStartTime = 0;
-    var minYear = 0;
-    var maxYear = 0;
+    var minIndex = 0;
+    var maxIndex = 0;
     var totalAnimationDuration = 10000; // 10 seconds to complete full cycle by default
     
     // Function to create interpolated data for a specific point in time
-    function createInterpolatedDataForTime(yearProgress) {
-      // Find the floor and ceiling years
-      var floorYear = Math.floor(yearProgress);
-      var ceilingYear = Math.ceil(yearProgress);
-      var fraction = yearProgress - floorYear;
+    function createInterpolatedDataForTime(indexProgress) {
+      // Find the floor and ceiling indices
+      var floorIndex = Math.floor(indexProgress);
+      var ceilingIndex = Math.ceil(indexProgress);
+      var fraction = indexProgress - floorIndex;
       
-      // Handle edge case where yearProgress is exactly an integer
+      // Handle edge case where indexProgress is exactly an integer
       if (fraction === 0) {
-        ceilingYear = floorYear;
+        ceilingIndex = floorIndex;
       }
       
-      // Ensure years are within our data range
-      floorYear = Math.max(minYear, Math.min(maxYear, floorYear));
-      ceilingYear = Math.max(minYear, Math.min(maxYear, ceilingYear));
+      // Ensure indices are within our data range
+      floorIndex = Math.max(minIndex, Math.min(maxIndex, floorIndex));
+      ceilingIndex = Math.max(minIndex, Math.min(maxIndex, ceilingIndex));
       
-      // Get data for floor and ceiling years
-      var floorData = parsedData[floorYear];
-      var ceilingData = parsedData[ceilingYear];
+      // Get the actual time values for these indices
+      var floorTime = originalTimes[floorIndex];
+      var ceilingTime = originalTimes[ceilingIndex];
+      
+      // Get data for floor and ceiling times
+      var floorData = parsedData[floorTime];
+      var ceilingData = parsedData[ceilingTime];
       
       // If we don't have data for these years, return null
       if (!floorData || !ceilingData) {
@@ -64,9 +70,10 @@ module.exports = {
       }
       
       // If floor and ceiling are the same, just return that data
-      if (floorYear === ceilingYear) {
+      if (floorIndex === ceilingIndex) {
         return {
-          time: floorYear,
+          index: floorIndex,
+          time: floorTime,
           data: floorData
         };
       }
@@ -127,7 +134,8 @@ module.exports = {
       
       // Return the interpolated data
       return {
-        time: yearProgress,
+        index: indexProgress,
+        time: floorTime, // Use the floor time for display
         data: {
           nodes: floorData.nodes, // Use nodes from floor data
           links: interpolatedLinks
@@ -207,9 +215,9 @@ module.exports = {
           step: 1
         },
         timeFormat: {
-          name: "時間格式", 
-          type: "text", 
-          default: "%Y"
+          name: "時間格式",
+          type: "text",
+          default: "%Y/%m"
         }
       },
       dimension: {
@@ -259,7 +267,10 @@ module.exports = {
       },
       sample: function() {
         // Sample data for power generation by source, type, and usage
-        var years = [2010, 2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023];
+        var timePoints = ["2010/01", "2010/04", "2010/07", "2010/10",
+                         "2011/01", "2011/04", "2011/07", "2011/10",
+                         "2012/01", "2012/04", "2012/07", "2012/10",
+                         "2013/01", "2013/04"];
         var sampleData = [];
         
         // First layer: energy sources to generation types
@@ -294,20 +305,20 @@ module.exports = {
         
         // Create first layer connections: source to type
         sourceToTypeConnections.forEach(conn => {
-          years.forEach((year, i) => {
+          timePoints.forEach((time, i) => {
             sampleData.push({
               source: conn.source,
               target: conn.target,
               value: conn.values[i],
-              time: year
+              time: time
             });
           });
         });
         
         // Create second layer connections: type to usage
         typeToUsageConnections.forEach(conn => {
-          years.forEach((year, i) => {
-            // Calculate the total value for this source (generation type) in this year
+          timePoints.forEach((time, i) => {
+            // Calculate the total value for this source (generation type) in this time period
             var sourceTotal = 0;
             sourceToTypeConnections.forEach(firstConn => {
               if (firstConn.target === conn.source) {
@@ -322,7 +333,7 @@ module.exports = {
               source: conn.source,
               target: conn.target,
               value: value,
-              time: year
+              time: time
             });
           });
         });
@@ -353,11 +364,19 @@ module.exports = {
         data = this.data;
         
         // Extract unique time points and sort them
-        timePoints = Array.from(new Set(data.map(d => d.time))).sort((a, b) => a - b);
+        timePoints = Array.from(new Set(data.map(d => d.time))).sort();
         
-        // Set min and max years for animation
-        minYear = timePoints[0];
-        maxYear = timePoints[timePoints.length - 1];
+        // Create mapping from time values to their sorted indices
+        timeIndices = {};
+        originalTimes = [];
+        timePoints.forEach((time, index) => {
+          timeIndices[time] = index;
+          originalTimes[index] = time;
+        });
+        
+        // Set min and max indices for animation
+        minIndex = 0;
+        maxIndex = timePoints.length - 1;
         
         
         // Reset animation state
@@ -454,7 +473,7 @@ module.exports = {
         // Get current time point based on elapsed time
         var elapsedTime = Date.now() - animationStartTime;
         var cycleProgress = (elapsedTime % totalAnimationDuration) / totalAnimationDuration;
-        var yearRange = maxYear - minYear;
+        var indexRange = maxIndex - minIndex;
         
         // Check if we're at the very end of the cycle (within a small threshold)
         var endThreshold = 0.99;
@@ -464,15 +483,17 @@ module.exports = {
           // Reset animation to start instantly
           animationStartTime = Date.now();
           // Use exact data from the first time point without interpolation
+          var firstTime = originalTimes[minIndex];
           interpolationResult = {
-            time: minYear,
-            data: parsedData[minYear]
+            index: minIndex,
+            time: firstTime,
+            data: parsedData[firstTime]
           };
         } else {
           // Normal progression
-          var yearProgress = cycleProgress * yearRange + minYear;
+          var indexProgress = cycleProgress * indexRange + minIndex;
           // Create interpolated data for current time
-          interpolationResult = createInterpolatedDataForTime(yearProgress);
+          interpolationResult = createInterpolatedDataForTime(indexProgress);
         }
         
         if (!interpolationResult) {
@@ -487,8 +508,14 @@ module.exports = {
         var formatTime = d3.timeFormat(this.cfg.timeFormat);
         try {
           // Try to format as date if it's a number (year)
-          if (typeof currentTime === 'number') {
-            timeLabel.text(formatTime(new Date(currentTime, 0, 1)));
+          if (!isNaN(parseInt(currentTime))) {
+            // If it looks like a year (e.g., 2022)
+            if (/^\d{4}$/.test(currentTime.toString())) {
+              timeLabel.text(formatTime(new Date(parseInt(currentTime), 0, 1)));
+            } else {
+              // For formats like "2022/03", just display as is
+              timeLabel.text(currentTime);
+            }
           } else {
             // Otherwise just display as is
             timeLabel.text(currentTime);
@@ -512,55 +539,7 @@ module.exports = {
         var sankeyNodes = sankeyData.nodes;
         var sankeyLinks = sankeyData.links;
         
-        // Create or update node groups
-        var nodeGroups = svg.selectAll(".node")
-          .data(sankeyNodes, d => d.id);
-        
-        // Remove old nodes
-        nodeGroups.exit().remove();
-        
-        // Add new nodes
-        var newNodes = nodeGroups.enter()
-          .append("g")
-          .attr("class", "node");
-        
-        // Add node rectangles
-        newNodes.append("rect")
-          .attr("class", "node-rect");
-        
-        // Add node labels
-        newNodes.append("text")
-          .attr("class", "node-label")
-          .attr("dy", ".35em");
-        
-        // Merge and update all nodes
-        nodeGroups = newNodes.merge(nodeGroups);
-        
-        // Update node rectangles - set values directly without transitions
-        var nodeRectUpdate = nodeGroups.select("rect.node-rect");
-        nodeRectUpdate
-          .attr("x", d => d.x0)
-          .attr("y", d => d.y0)
-          .attr("height", d => Math.max(0, d.y1 - d.y0))
-          .attr("width", d => Math.max(0, d.x1 - d.x0))
-          .attr("fill", d => typeof colorScale === 'function' ? colorScale(d.id) : "#999")
-          .attr("opacity", this.cfg.nodeOpacity);
-        
-        // Update node labels - set values directly without transitions
-        var nodeLabelUpdate = nodeGroups.select("text.node-label");
-        nodeLabelUpdate
-          .attr("x", d => d.x0 < width / 2 ? d.x1 + 6 : d.x0 - 6)
-          .attr("y", d => (d.y1 + d.y0) / 2)
-          .attr("text-anchor", d => d.x0 < width / 2 ? "start" : "end")
-          .attr("font-size", this.cfg.labelFontSize + "px")
-          .text(d => {
-            if (this.cfg.showNodeLabels === "none") return "";
-            if (this.cfg.showNodeLabels === "left" && d.x0 >= width / 2) return "";
-            if (this.cfg.showNodeLabels === "right" && d.x0 < width / 2) return "";
-            return d.id;
-          });
-        
-        // Create or update links
+        // First, create and update links (lowest layer)
         var linkGroups = svg.selectAll(".link")
           .data(sankeyLinks, d => `${d.source.id}-${d.target.id}`);
         
@@ -582,6 +561,61 @@ module.exports = {
           .attr("stroke", d => typeof colorScale === 'function' ? colorScale(d.source.id) : "#999")
           .attr("stroke-opacity", this.cfg.linkOpacity)
           .attr("fill", "none");
+        
+        // Second, create and update node rectangles (middle layer)
+        var nodeRects = svg.selectAll(".node-rect")
+          .data(sankeyNodes, d => d.id);
+        
+        // Remove old node rectangles
+        nodeRects.exit().remove();
+        
+        // Add new node rectangles
+        var newNodeRects = nodeRects.enter()
+          .append("rect")
+          .attr("class", "node-rect");
+        
+        // Merge and update all node rectangles
+        nodeRects = newNodeRects.merge(nodeRects);
+        
+        // Update node rectangles
+        nodeRects
+          .attr("x", d => d.x0)
+          .attr("y", d => d.y0)
+          .attr("height", d => Math.max(0, d.y1 - d.y0))
+          .attr("width", d => Math.max(0, d.x1 - d.x0))
+          .attr("fill", d => typeof colorScale === 'function' ? colorScale(d.id) : "#999")
+          .attr("opacity", this.cfg.nodeOpacity);
+        
+        // Third, create and update node labels (top layer)
+        var nodeLabels = svg.selectAll(".node-label")
+          .data(sankeyNodes, d => d.id);
+        
+        // Remove old node labels
+        nodeLabels.exit().remove();
+        
+        // Add new node labels
+        var newNodeLabels = nodeLabels.enter()
+          .append("text")
+          .attr("class", "node-label")
+          .attr("dy", ".35em");
+        
+        // Merge and update all node labels
+        nodeLabels = newNodeLabels.merge(nodeLabels);
+        
+        // Update node labels
+        nodeLabels
+          .attr("x", d => d.x0 < width / 2 ? d.x1 + 6 : d.x0 - 6)
+          .attr("y", d => (d.y1 + d.y0) / 2)
+          .attr("text-anchor", d => d.x0 < width / 2 ? "start" : "end")
+          .attr("font-size", this.cfg.labelFontSize + "px")
+          .text(d => {
+            if (this.cfg.showNodeLabels === "none") return "";
+            if (this.cfg.showNodeLabels === "left" && d.x0 >= width / 2) return "";
+            if (this.cfg.showNodeLabels === "right" && d.x0 < width / 2) return "";
+            return d.id;
+          });
+        
+        // No additional code needed here since we moved the link rendering to the top
       },
       tick: function() {
         // Clear any existing animation
@@ -613,7 +647,7 @@ module.exports = {
         // Get current time point based on elapsed time
         var elapsedTime = Date.now() - animationStartTime;
         var cycleProgress = (elapsedTime % totalAnimationDuration) / totalAnimationDuration;
-        var yearRange = maxYear - minYear;
+        var indexRange = maxIndex - minIndex;
         
         // Check if we're at the very end of the cycle (within a small threshold)
         var endThreshold = 0.99;

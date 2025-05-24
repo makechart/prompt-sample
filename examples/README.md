@@ -14,7 +14,7 @@ This folder contains various chart code examples generated using prompt.md as th
 
 ## [Contour Scatter Plot](contour-scatter-plot.html)
 
-![Contour Scatter Plot](resources/contour-scatter-plot.npg)
+![Contour Scatter Plot](resources/contour-scatter-plot.png)
 
 
 ## [Relation Diagram](relation.html)

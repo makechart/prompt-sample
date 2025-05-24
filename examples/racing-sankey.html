@@ -199,11 +199,11 @@ module.exports = {
           default: "all"
         },
         labelFontSize: {
-          name: "標籤字體大小", 
-          type: "number", 
-          default: 10, 
-          min: 8, 
-          max: 16, 
+          name: "標籤字體大小",
+          type: "number",
+          default: 10,
+          min: 8,
+          max: 40,
           step: 1
         },
         timeFormat: {
@@ -501,7 +501,10 @@ module.exports = {
         // Compute the Sankey layout
         var sankeyData;
         try {
-          sankeyData = sankey(currentData);
+          sankeyData = sankey({
+    nodes: currentData.nodes.map(d => Object.assign({}, d)),
+    links: currentData.links.map(d => Object.assign({}, d))
+  });
         } catch (e) {
           // Error computing Sankey layout
           return;

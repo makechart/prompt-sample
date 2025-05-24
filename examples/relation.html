@@ -1,0 +1,506 @@
+<div>
+  <script type="@plotdb/block">
+    module.exports = {
+      pkg: {
+        extend: {ns: "local", name: "chartbase", path: "index.html", version: "main"},
+        dependencies: [
+          {url: "https://d3js.org/d3.v7.min.js"},
+          {url: "https://cdn.jsdelivr.net/npm/ldcolor@1.1.2/index.min.js"},
+          {url: "https://cdn.jsdelivr.net/npm/d3-force-boundary@0.0.1/dist/d3-force-boundary.min.js"}
+        ]
+      },
+      init: function(opt) {
+        var d3 = opt.ctx.d3;
+        var ldcolor = opt.ctx.ldcolor;
+        var root = opt.root;
+        
+        // 創建SVG容器
+        var svg = d3.select(root).append("svg")
+          .attr("width", "100%")
+          .attr("height", "100%")
+          .style("display", "block");
+
+        // 創建力導向圖所需的元素
+        var container = svg.append("g");
+        var link = container.append("g").attr("class", "links").selectAll(".link");
+        var linkLabel = container.append("g").attr("class", "link-labels").selectAll(".link-label");
+        var node = container.append("g").attr("class", "nodes").selectAll(".node");
+        var tooltip = d3.select(root).append("div")
+          .attr("class", "tooltip")
+          .style("position", "absolute")
+          .style("visibility", "hidden")
+          .style("background-color", "white")
+          .style("border", "1px solid #ddd")
+          .style("border-radius", "4px")
+          .style("padding", "8px")
+          .style("box-shadow", "0 2px 4px rgba(0,0,0,0.1)")
+          .style("pointer-events", "none")
+          .style("font-size", "12px");
+
+        // 力導向模擬
+        var simulation = d3.forceSimulation()
+          .force("link", d3.forceLink().id(d => d.id).distance(d => 100 + d.weight * 10))
+          .force("charge", d3.forceManyBody().strength(-400))
+          .force("center", d3.forceCenter(0, 0))
+          .force("collision", d3.forceCollide().radius(d => (d.size || 20) + 30));
+
+        opt.pubsub.fire("init", {mod: {
+          config: {
+            nodeSize: {name: "節點大小", type: "number", min: 5, max: 50, default: 20, step: 1},
+            linkDistance: {name: "連結距離", type: "number", min: 50, max: 500, default: 150, step: 10},
+            linkWidth: {name: "連結寬度", type: "number", min: 1, max: 10, default: 2, step: 0.5},
+            textSize: {name: "文字大小", type: "number", min: 8, max: 24, default: 12, step: 1},
+            linkTextSize: {name: "連結文字大小", type: "number", min: 8, max: 20, default: 10, step: 1},
+            textColor: {name: "文字顏色", type: "color", default: "#333333"},
+            nodeColor: {name: "節點顏色", type: "color", default: "#1f77b4"},
+            linkColor: {name: "連結顏色", type: "color", default: "#999999"},
+            linkTextColor: {name: "連結文字顏色", type: "color", default: "#555555"},
+            textStrokeWidth: {name: "文字描邊寬度", type: "number", min: 0, max: 5, default: 2, step: 0.5},
+            textStrokeColor: {name: "文字描邊顏色", type: "color", default: "#ffffff"},
+            palette: {name: "群組顏色", type: "palette", default: {colors: ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf"]}},
+            showLabels: {name: "顯示標籤", type: "choice", values: ["always", "hover", "none"], default: "always"},
+            showLinkLabels: {name: "顯示連結標籤", type: "choice", values: ["yes", "no"], default: "yes"},
+            layout: {name: "佈局", type: "choice", values: ["force", "radial", "circle"], default: "force"},
+            preventOverlap: {name: "避免重疊", type: "choice", values: ["yes", "no"], default: "yes"}
+          },
+          dimension: {
+            source: {},
+            target: {},
+            weight: {},
+            nodeGroup: {},
+            nodeName: {},
+            nodeValue: {},
+            relation: {}
+          },
+          init: function() {
+            // 縮放功能
+            var zoom = d3.zoom()
+              .scaleExtent([0.1, 10])
+              .on("zoom", (event) => {
+                container.attr("transform", event.transform);
+              });
+            
+            svg.call(zoom);
+            
+            // 初始化空資料結構，防止第一次渲染時出錯
+            this.parsed = {nodes: [], links: []};
+          },
+          sample: function() {
+            return {
+              raw: [
+                { source: "楊過", target: "小龍女", relation: "愛情", weight: 5, group: "主角" },
+                { source: "楊過", target: "郭靖", relation: "師徒", weight: 3, group: "主角" },
+                { source: "楊過", target: "洪七公", relation: "師徒", weight: 3, group: "主角" },
+                { source: "楊過", target: "歐陽鋒", relation: "師徒", weight: 3, group: "主角" },
+                { source: "楊過", target: "金輪法王", relation: "敵對", weight: 4, group: "主角" },
+                { source: "小龍女", target: "林朝英", relation: "傳承", weight: 3, group: "主角" },
+                { source: "小龍女", group: "主角" }, // 單獨節點
+                { source: "郭靖", target: "黃蓉", relation: "愛情", weight: 5, group: "射雕英雄" },
+                { source: "郭靖", target: "洪七公", relation: "師徒", weight: 3, group: "射雕英雄" },
+                { source: "郭靖", target: "楊康", relation: "結拜兄弟", weight: 2, group: "射雕英雄" },
+                { source: "黃蓉", target: "洪七公", relation: "師徒", weight: 3, group: "射雕英雄" },
+                { source: "黃蓉", target: "歐陽鋒", relation: "敵對", weight: 3, group: "射雕英雄" },
+                { source: "黃蓉", group: "射雕英雄" }, // 單獨節點
+                { source: "郭襄", target: "黃蓉", relation: "親子", weight: 4, group: "射雕英雄" },
+                { source: "郭襄", target: "郭靖", relation: "親子", weight: 4, group: "射雕英雄" },
+                { source: "郭芙", target: "黃蓉", relation: "親子", weight: 4, group: "射雕英雄" },
+                { source: "郭芙", target: "郭靖", relation: "親子", weight: 4, group: "射雕英雄" },
+                { source: "郭芙", target: "楊過", relation: "曖昧", weight: 2, group: "射雕英雄" },
+                { source: "郭芙", target: "武修文", relation: "愛情", weight: 3, group: "射雕英雄" },
+                { source: "武修文", target: "武敦儒", relation: "兄弟", weight: 2, group: "配角" },
+                { source: "武敦儒", group: "配角" }, // 單獨節點
+                { source: "裘千尺", target: "裘千仞", relation: "兄妹", weight: 2, group: "配角" },
+                { source: "裘千仞", group: "配角" }, // 單獨節點
+                { source: "金輪法王", target: "霍都", relation: "主從", weight: 2, group: "反派" },
+                { source: "霍都", group: "反派" }, // 單獨節點
+                { source: "楊過", target: "楊康", relation: "親子", weight: 4, group: "主角" },
+                { source: "楊康", target: "穆念慈", relation: "愛情", weight: 4, group: "射雕英雄" },
+                { source: "楊康", target: "歐陽鋒", relation: "師徒", weight: 3, group: "射雕英雄" },
+                { source: "穆念慈", group: "配角" }, // 單獨節點
+                { source: "歐陽鋒", group: "反派" }, // 單獨節點
+                { source: "洪七公", group: "射雕英雄" }, // 單獨節點
+                { source: "林朝英", group: "配角" }, // 單獨節點
+              ],
+              binding: {
+                source: {key: "source"},
+                target: {key: "target"},
+                weight: {key: "weight"},
+                nodeGroup: {key: "group"},
+                nodeName: {key: "source"},
+                nodeValue: {key: "weight"},
+                relation: {key: "relation"}
+              }
+            };
+          },
+          bind: function() {
+            // 檢查是否有資料
+            if (!this.data || this.data.length === 0) {
+              this.parsed = {nodes: [], links: []};
+              return;
+            }
+            
+            // 處理數據並轉換為節點和連結的格式
+            this.parsed = {nodes: [], links: []};
+            
+            // 收集所有唯一的節點
+            let nodeMap = new Map();
+            let groups = new Set();
+            
+            // 第一步：收集所有節點（包括 source 和 target）
+            this.data.forEach(d => {
+              if (d && d.source) {
+                // 創建或更新 source 節點
+                if (!nodeMap.has(d.source)) {
+                  nodeMap.set(d.source, {
+                    id: d.source,
+                    name: d.nodeName || d.source,
+                    value: d.nodeValue || 1,
+                    group: d.nodeGroup || "default"
+                  });
+                }
+                
+                // 如果有 target，創建 target 節點（暫時不設置群組）
+                if (d.target && !nodeMap.has(d.target)) {
+                  nodeMap.set(d.target, {
+                    id: d.target,
+                    name: d.target,
+                    value: 1,
+                    group: "default" // 暫時設為默認群組
+                  });
+                }
+              }
+            });
+            
+            // 第二步：創建一個映射，記錄每個節點作為 source 時的群組
+            let sourceGroupMap = new Map();
+            
+            this.data.forEach(d => {
+              if (d && d.source && d.nodeGroup) {
+                sourceGroupMap.set(d.source, d.nodeGroup);
+                groups.add(d.nodeGroup);
+              }
+            });
+            
+            // 第三步：更新所有節點的群組
+            for (let [nodeId, nodeData] of nodeMap) {
+              // 如果這個節點在 sourceGroupMap 中有記錄，使用該群組
+              if (sourceGroupMap.has(nodeId)) {
+                nodeData.group = sourceGroupMap.get(nodeId);
+              }
+              // 否則保持默認群組
+            }
+            
+            // 將節點添加到解析後的數據中
+            this.parsed.nodes = Array.from(nodeMap.values());
+            
+            // 處理連結
+            this.data.forEach(d => {
+              // 只有當同時有 source 和 target 時才建立連結
+              if (d && d.source && d.target) {
+                this.parsed.links.push({
+                  source: d.source,
+                  target: d.target,
+                  weight: d.weight || 1,
+                  relation: d.relation || "關聯"
+                });
+              }
+            });
+            
+            // 設置節點的大小基於權重
+            if (this.parsed.nodes.length > 0) {
+              let maxValue = Math.max(...this.parsed.nodes.map(d => d.value || 1));
+              let minValue = Math.min(...this.parsed.nodes.map(d => d.value || 1));
+              let sizeScale = d3.scaleLinear()
+                .domain([minValue, maxValue])
+                .range([this.cfg.nodeSize * 0.5, this.cfg.nodeSize]);
+              
+              this.parsed.nodes.forEach(d => {
+                d.size = sizeScale(d.value || 1);
+              });
+            }
+            
+            // 設置顏色比例尺
+            let groupsArray = Array.from(groups);
+            let colorList = this.cfg.palette.colors.map(c => ldcolor.hex(c));
+            
+            // 確保顏色足夠
+            while (colorList.length < groupsArray.length) {
+              colorList = colorList.concat(colorList);
+            }
+            
+            this.colorScale = d3.scaleOrdinal()
+              .domain(groupsArray)
+              .range(colorList.slice(0, groupsArray.length));
+          },
+          resize: function() {
+            var width = this.root.clientWidth;
+            var height = this.root.clientHeight;
+            
+            svg.attr("width", width).attr("height", height);
+            
+            if (simulation && width && height) {
+              simulation.force("center", d3.forceCenter(width / 2, height / 2));
+              simulation.alpha(0.3).restart();
+            }
+          },
+          render: function() {
+            var self = this;
+            var width = this.root.clientWidth || 300;
+            var height = this.root.clientHeight || 200;
+            
+            // 如果沒有數據，顯示空白圖表
+            if (!this.parsed || !this.parsed.nodes || this.parsed.nodes.length === 0) {
+              container.select(".links").selectAll("*").remove();
+              container.select(".link-labels").selectAll("*").remove();
+              container.select(".nodes").selectAll("*").remove();
+              return;
+            }
+            
+            // 更新力導向設定
+            simulation.force("link").distance(this.cfg.linkDistance);
+            simulation.force("collision", d3.forceCollide().radius(d => (d.size || this.cfg.nodeSize) + 30));
+            
+            // 添加邊界力以防止節點超出畫面
+            simulation.force("boundary", function(alpha) {
+              const padding = 50; // 邊界內距
+              for (let node of self.parsed.nodes) {
+                if (node.x < padding) node.x = padding;
+                if (node.x > width - padding) node.x = width - padding;
+                if (node.y < padding) node.y = padding;
+                if (node.y > height - padding) node.y = height - padding;
+              }
+            });
+            
+            // 根據布局類型設置不同的力模型
+            if (this.cfg.layout === "radial") {
+              simulation.force("x", d3.forceX().strength(0.1))
+                .force("y", d3.forceY().strength(0.1))
+                .force("radial", d3.forceRadial(
+                  d => (d.group === "default" ? 100 : 200), 
+                  width / 2, 
+                  height / 2
+                ).strength(0.8));
+            } else if (this.cfg.layout === "circle") {
+              let radius = Math.min(width, height) / 2 - 50;
+              let nodes = this.parsed.nodes;
+              let total = nodes.length;
+              
+              for (let i = 0; i < total; i++) {
+                let angle = (i / total) * 2 * Math.PI;
+                nodes[i].fx = width / 2 + radius * Math.cos(angle);
+                nodes[i].fy = height / 2 + radius * Math.sin(angle);
+              }
+              
+              simulation.alpha(0).restart();
+            } else {
+              // 默認的力導向布局
+              simulation.force("x", null)
+                .force("y", null)
+                .force("radial", null);
+              
+              // 清除固定位置
+              this.parsed.nodes.forEach(node => {
+                node.fx = null;
+                node.fy = null;
+              });
+            }
+            
+            // 更新連結
+            link = container.select(".links").selectAll(".link")
+              .data(this.parsed.links, d => d.source.id + "-" + d.target.id);
+            
+            link.exit().remove();
+            
+            var linkEnter = link.enter().append("line")
+              .attr("class", "link")
+              .style("stroke-width", d => Math.sqrt(d.weight) * this.cfg.linkWidth)
+              .style("stroke", d => this.cfg.linkColor)
+              .style("opacity", 0.6);
+            
+            link = linkEnter.merge(link);
+            
+            // 更新連結標籤
+            linkLabel = container.select(".link-labels").selectAll(".link-label")
+              .data(this.parsed.links, d => d.source.id + "-" + d.target.id);
+            
+            linkLabel.exit().remove();
+            
+            var linkLabelEnter = linkLabel.enter().append("text")
+              .attr("class", "link-label")
+              .attr("dy", -5)
+              .attr("text-anchor", "middle")
+              .text(d => d.relation)
+              .style("font-size", this.cfg.linkTextSize + "px")
+              .style("fill", this.cfg.linkTextColor)
+              .style("stroke", this.cfg.textStrokeColor)
+              .style("stroke-width", this.cfg.textStrokeWidth * 0.6)
+              .style("paint-order", "stroke")
+              .style("stroke-linecap", "round")
+              .style("stroke-linejoin", "round")
+              .style("pointer-events", "none")
+              .style("display", this.cfg.showLinkLabels === "yes" ? "block" : "none");
+            
+            linkLabel = linkLabelEnter.merge(linkLabel);
+            
+            linkLabel.text(d => d.relation)
+              .style("font-size", this.cfg.linkTextSize + "px")
+              .style("fill", this.cfg.linkTextColor)
+              .style("stroke", this.cfg.textStrokeColor)
+              .style("stroke-width", this.cfg.textStrokeWidth * 0.6)
+              .style("display", this.cfg.showLinkLabels === "yes" ? "block" : "none");
+            
+            // 更新節點
+            node = container.select(".nodes").selectAll(".node")
+              .data(this.parsed.nodes, d => d.id);
+            
+            node.exit().remove();
+            
+            var nodeEnter = node.enter().append("g")
+              .attr("class", "node")
+              .call(d3.drag()
+                .on("start", dragstarted)
+                .on("drag", dragged)
+                .on("end", dragended));
+            
+            // 添加節點圓圈
+            nodeEnter.append("circle")
+              .attr("r", d => d.size || this.cfg.nodeSize)
+              .style("fill", d => d.group && this.colorScale(d.group) || this.cfg.nodeColor)
+              .style("stroke", "#fff")
+              .style("stroke-width", 1.5);
+            
+            // 添加文字標籤
+            nodeEnter.append("text")
+              .attr("class", "node-label")
+              .attr("dx", d => d.size + 5)
+              .attr("dy", ".35em")
+              .text(d => d.name)
+              .style("font-size", this.cfg.textSize + "px")
+              .style("fill", this.cfg.textColor)
+              .style("stroke", this.cfg.textStrokeColor)
+              .style("stroke-width", this.cfg.textStrokeWidth * 0.5)
+              .style("paint-order", "stroke")
+              .style("stroke-linecap", "round")
+              .style("stroke-linejoin", "round")
+              .style("pointer-events", "none")
+              .style("display", this.cfg.showLabels === "always" ? "block" : "none");
+            
+            node = nodeEnter.merge(node);
+            
+            // 更新現有節點樣式
+            node.select("circle")
+              .attr("r", d => d.size || this.cfg.nodeSize)
+              .style("fill", d => d.group && this.colorScale(d.group) || this.cfg.nodeColor);
+            
+            // 更新文字標籤
+            node.select(".node-label")
+              .attr("dx", d => d.size + 5)
+              .style("font-size", this.cfg.textSize + "px")
+              .style("fill", this.cfg.textColor)
+              .style("stroke", this.cfg.textStrokeColor)
+              .style("stroke-width", this.cfg.textStrokeWidth * 0.5)
+              .style("display", this.cfg.showLabels === "always" ? "block" : "none");
+            
+            // 添加工具提示
+            if (this.cfg.showLabels === "hover") {
+              node
+                .on("mouseover", function(event, d) {
+                  tooltip.style("visibility", "visible")
+                    .html(`<strong>${d.name}</strong><br>群組: ${d.group || "無"}<br>值: ${d.value || "無"}`)
+                    .style("left", (event.pageX + 10) + "px")
+                    .style("top", (event.pageY - 10) + "px");
+                })
+                .on("mousemove", function(event) {
+                  tooltip.style("left", (event.pageX + 10) + "px")
+                    .style("top", (event.pageY - 10) + "px");
+                })
+                .on("mouseout", function() {
+                  tooltip.style("visibility", "hidden");
+                });
+            }
+            
+            // 更新模擬
+            simulation.nodes(this.parsed.nodes)
+              .on("tick", ticked);
+            
+            simulation.force("link")
+              .links(this.parsed.links);
+            
+            simulation.alpha(0.3).restart();
+            
+            // 預估文本寬度的輔助函數
+            function getTextWidth(text, fontSize) {
+              return text.length * (fontSize * 0.6);
+            }
+            
+            // 力導向模擬的tick函數
+            function ticked() {
+              link
+                .attr("x1", d => d.source.x)
+                .attr("y1", d => d.source.y)
+                .attr("x2", d => d.target.x)
+                .attr("y2", d => d.target.y);
+              
+              // 更新連結標籤位置
+              linkLabel
+                .attr("x", d => (d.source.x + d.target.x) / 2)
+                .attr("y", d => (d.source.y + d.target.y) / 2)
+                .attr("transform", function(d) {
+                  const dx = d.target.x - d.source.x;
+                  const dy = d.target.y - d.source.y;
+                  const angle = Math.atan2(dy, dx) * 180 / Math.PI;
+                  const flip = angle > 90 || angle < -90;
+                  return `rotate(${flip ? angle + 180 : angle}, ${(d.source.x + d.target.x) / 2}, ${(d.source.y + d.target.y) / 2})`;
+                });
+              
+              node
+                .attr("transform", d => `translate(${d.x},${d.y})`);
+                
+              // 當啟用避免重疊時應用簡化的防碰撞邏輯
+              // 由於我們移除了背景矩形，這裡的碰撞檢測邏輯也需要簡化
+              if (self.cfg.preventOverlap === "yes") {
+                // 簡單的標籤位置調整，將部分標籤上移
+                const labelNodes = node.nodes();
+                
+                for (let i = 0; i < labelNodes.length; i++) {
+                  // 每隔一個節點，將標籤上移
+                  if (i % 2 === 1) {
+                    const nodeElem = labelNodes[i];
+                    const labelText = d3.select(nodeElem).select(".node-label");
+                    if (!labelText.empty()) {
+                      labelText.attr("dy", "-1em");
+                    }
+                  }
+                }
+              }
+            }
+            
+            // 拖拽功能
+            function dragstarted(event, d) {
+              if (!event.active) simulation.alphaTarget(0.3).restart();
+              d.fx = d.x;
+              d.fy = d.y;
+            }
+            
+            function dragged(event, d) {
+              d.fx = event.x;
+              d.fy = event.y;
+            }
+            
+            function dragended(event, d) {
+              if (!event.active) simulation.alphaTarget(0);
+              if (self.cfg.layout === "force") {
+                d.fx = null;
+                d.fy = null;
+              }
+            }
+          },
+          destroy: function() {
+            // 清理模擬
+            if (simulation) simulation.stop();
+          }
+        }});
+      }
+    }
+  </script>
+</div>

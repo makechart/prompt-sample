@@ -1,0 +1,362 @@
+<div>
+<script type="@plotdb/block">
+module.exports = {
+  pkg: {
+    extend: {ns: "local", name: "chartbase", path: "index.html", version: "main"},
+    dependencies: [
+      {url: "https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"},
+      {url: "https://cdn.jsdelivr.net/npm/dayjs@1.11.7/dayjs.min.js"},
+      {url: "https://cdn.jsdelivr.net/npm/ldcolor@1.0.0/index.min.js"}
+    ]
+  },
+  init: function(opt) {
+    var d3 = opt.ctx.d3;
+    var dayjs = opt.ctx.dayjs;
+    var ldcolor = opt.ctx.ldcolor;
+    var root = opt.root;
+    var svg = d3.select(root).append("svg").attr("width", "100%").attr("height", "100%");
+    // Store references to be used in other methods
+    var tooltip = d3.select(root).append("div")
+      .attr("class", "tooltip")
+      .style("position", "absolute")
+      .style("visibility", "hidden")
+      .style("background-color", "rgba(0,0,0,0.8)")
+      .style("color", "white")
+      .style("padding", "5px")
+      .style("border-radius", "3px")
+      .style("font-size", "12px");
+    
+    // Store references in a global variable to be accessed by all methods
+    var globalOpt = opt;
+    
+    opt.pubsub.fire("init", {mod: {
+      config: {
+        autoSizeCell: {name: "Auto-size Cells", type: "choice", values: ["yes", "no"], default: "yes"},
+        cellSize: {name: "Cell Size (when Auto-size off)", type: "number", min: 8, max: 20, default: 12, step: 1},
+        cellPadding: {name: "Cell Padding", type: "number", min: 1, max: 5, default: 2, step: 1},
+        rowsPerSection: {name: "Rows Per Section", type: "number", min: 1, max: 10, default: 7, step: 1},
+        sectionSpacing: {name: "Section Spacing", type: "number", min: 5, max: 30, default: 15, step: 1},
+        autoAdjustWeeks: {name: "Auto-adjust Weeks", type: "choice", values: ["yes", "no"], default: "yes"},
+        weeksToShow: {name: "Weeks to Show (when Auto-adjust off)", type: "number", min: 10, max: 52, default: 52, step: 1},
+        emptyColor: {name: "Empty Color", type: "color", default: "#ebedf0"},
+        textColor: {name: "Text Color", type: "color", default: "#666666"},
+        palette: {name: "Color Palette", type: "palette", default: {colors: ["#ebedf0", "#9be9a8", "#40c463", "#30a14e", "#216e39"]}},
+        showMonthLabels: {name: "Show Month Labels", type: "choice", values: ["yes", "no"], default: "yes"},
+        showDayLabels: {name: "Show Day Labels", type: "choice", values: ["yes", "no"], default: "yes"},
+        maxCommitsPerDay: {name: "Max Commits Per Day", type: "number", min: 5, max: 30, default: 15, step: 1}
+      },
+      dimension: {
+        date: {},
+        value: {}
+      },
+      init: function() {
+        // Initialize any variables or state here
+        this.parsed = null;
+      },
+      sample: function() {
+        // Generate sample data for the calendar heatmap
+        var today = dayjs();
+        // Use default values if this.cfg is not available yet
+        var autoAdjustWeeks = this.cfg && this.cfg.autoAdjustWeeks ? this.cfg.autoAdjustWeeks === "yes" : true;
+        var weeksToShow = this.cfg ? this.cfg.weeksToShow : 52;
+        var maxCommits = this.cfg ? this.cfg.maxCommitsPerDay : 15;
+        var data = [];
+        
+        // Generate data for past dates (random commit counts)
+        for (var i = 0; i < weeksToShow * 7; i++) {
+          var date = today.subtract(i, 'day');
+          // Skip one week after current date (keep it empty)
+          if (i < 7) continue;
+          
+          // Generate random commit count (more likely to be 0 or low)
+          var rand = Math.random();
+          var commits = 0;
+          
+          if (rand > 0.6) {
+            // 40% chance of having commits
+            commits = Math.floor(Math.random() * maxCommits) + 1;
+            // Make high commit counts less likely
+            if (commits > maxCommits * 0.7 && Math.random() > 0.3) {
+              commits = Math.floor(commits * 0.5);
+            }
+          }
+          
+          data.push({
+            date: date.format('YYYY-MM-DD'),
+            commits: commits
+          });
+        }
+        
+        return {
+          binding: {
+            date: {key: "date"},
+            value: {key: "commits"}
+          },
+          raw: data
+        };
+      },
+      bind: function() {
+        // Process the data for rendering
+        var that = this;
+        this.parsed = [];
+        
+        // If no data, use sample data
+        if (!this.data || !this.data.length) {
+          var sample = this.sample();
+          this.data = sample.raw.map(function(d) {
+            return {date: d.date, value: d.commits};
+          });
+        }
+        
+        // Calculate the date range in the data
+        var minDate, maxDate;
+        
+        // Process data for rendering
+        this.parsed = this.data.map(function(d) {
+          var date = dayjs(d.date);
+          
+          // Track min and max dates
+          if (!minDate || date.isBefore(minDate)) {
+            minDate = date;
+          }
+          if (!maxDate || date.isAfter(maxDate)) {
+            maxDate = date;
+          }
+          
+          return {
+            date: date,
+            value: +d.value || 0
+          };
+        });
+        
+        // Store date range for auto-adjusting weeks
+        this.minDate = minDate;
+        this.maxDate = maxDate || dayjs();
+        
+        // Find max value for color scaling
+        this.maxValue = d3.max(this.parsed, function(d) { return d.value; }) ||
+                        (this.cfg ? this.cfg.maxCommitsPerDay : 15);
+      },
+      resize: function() {
+        // This will be called when the container is resized
+        // The render function will be called automatically after this
+      },
+      render: function() {
+        var that = this;
+        var cfg = this.cfg;
+        
+        // Clear previous rendering
+        if (this.svg) {
+          d3.select(this.svg).selectAll("*").remove();
+        } else {
+          // If this.svg is not available, use the one created in the init function
+          this.svg = d3.select(globalOpt.root).select("svg").node();
+        }
+        
+        if (!this.parsed || !this.parsed.length) {
+          this.bind();
+        }
+        
+        // Get dimensions
+        var width = this.box.width;
+        var height = this.box.height;
+        
+        // Calculate layout parameters with fallbacks
+        var autoSizeCell = cfg && cfg.autoSizeCell ? cfg.autoSizeCell === "yes" : true;
+        var autoAdjustWeeks = cfg && cfg.autoAdjustWeeks ? cfg.autoAdjustWeeks === "yes" : true;
+        var cellPadding = cfg ? cfg.cellPadding : 2;
+        var rowsPerSection = cfg ? cfg.rowsPerSection : 7;
+        var sectionSpacing = cfg ? cfg.sectionSpacing : 15;
+        var showMonthLabels = cfg && cfg.showMonthLabels ? cfg.showMonthLabels === "yes" : true;
+        var showDayLabels = cfg && cfg.showDayLabels ? cfg.showDayLabels === "yes" : true;
+        var emptyColor = cfg && cfg.emptyColor ? cfg.emptyColor : "#ebedf0";
+        var textColor = cfg && cfg.textColor ? cfg.textColor : "#666666";
+        
+        // Get color palette with fallback
+        var colorPalette = cfg && cfg.palette ?
+          cfg.palette.colors.map(function(c) { return ldcolor.web(c); }) :
+          ["#ebedf0", "#9be9a8", "#40c463", "#30a14e", "#216e39"];
+        
+        // Create color scale
+        var colorScale = d3.scaleQuantize()
+          .domain([0, this.maxValue])
+          .range(colorPalette.slice(1)); // Skip the first color (empty)
+        
+        // Get today's date and calculate date range
+        var today = dayjs();
+        
+        // Determine weeks to show - auto-adjust or use config
+        var weeksToShow;
+        if (autoAdjustWeeks && this.minDate && this.maxDate) {
+          // Calculate weeks between min and max date
+          var diffDays = this.maxDate.diff(this.minDate, 'day');
+          weeksToShow = Math.ceil(diffDays / 7) + 1; // Add 1 for partial weeks
+          
+          // Ensure at least 13 weeks (about 3 months)
+          weeksToShow = Math.max(13, weeksToShow);
+        } else {
+          weeksToShow = cfg && cfg.weeksToShow ? cfg.weeksToShow : 52;
+        }
+        
+        var startDate = today.subtract(weeksToShow * 7, 'day');
+        
+        // Calculate how many days to display
+        var daysToShow = weeksToShow * 7;
+        
+        // Calculate cell size based on available space if auto-size is enabled
+        var cellSize;
+        if (autoSizeCell) {
+          // Calculate available width for cells
+          var availableWidth = width - (showDayLabels ? 20 : 0);
+          
+          // Determine how many weeks we want to show per row (aim for about 13-26 weeks per row)
+          var targetWeeksPerRow = Math.min(weeksToShow, 26);
+          
+          // Calculate cell size based on available width and target weeks
+          cellSize = Math.floor((availableWidth / targetWeeksPerRow) - cellPadding);
+          
+          // Ensure cell size is within reasonable bounds
+          cellSize = Math.max(8, Math.min(20, cellSize));
+        } else {
+          cellSize = cfg ? cfg.cellSize : 12;
+        }
+        
+        // Calculate how many columns (weeks) we can fit in the width
+        var totalCellWidth = cellSize + cellPadding;
+        var daysPerRow = 7; // Always 7 days per row (Sunday to Saturday)
+        
+        // Calculate how many weeks can fit horizontally
+        var weeksPerRow = Math.floor((width - (showDayLabels ? cellSize * 1.5 : 0)) / totalCellWidth);
+        weeksPerRow = Math.max(13, Math.min(weeksToShow, weeksPerRow)); // At least 13 weeks per row, but no more than total weeks
+        
+        // Calculate how many sections we need
+        // weeksToShow already defined above
+        var sectionsNeeded = Math.ceil(weeksToShow / weeksPerRow);
+        
+        // Calculate total height needed
+        var sectionHeight = rowsPerSection * (cellSize + cellPadding) + (showMonthLabels ? cellSize * 1.5 : 0);
+        var totalHeight = sectionsNeeded * sectionHeight + (sectionsNeeded - 1) * sectionSpacing;
+        
+        // Set SVG height
+        d3.select(this.svg).attr("height", totalHeight);
+        
+        // Create a group for each section
+        for (var section = 0; section < sectionsNeeded; section++) {
+          var sectionStartWeek = section * weeksPerRow;
+          var weeksInThisSection = Math.min(weeksPerRow, weeksToShow - sectionStartWeek);
+          
+          var sectionGroup = d3.select(this.svg).append("g")
+            .attr("transform", "translate(" + (showDayLabels ? cellSize * 1.5 : 0) + "," + 
+                  (section * (sectionHeight + sectionSpacing) + (showMonthLabels ? cellSize * 1.5 : 0)) + ")");
+          
+          // Add day labels (Mon, Tue, etc.) for each section if configured
+          if (showDayLabels) {
+            var dayLabels = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+            sectionGroup.selectAll(".dayLabel")
+              .data(dayLabels)
+              .enter().append("text")
+              .attr("class", "dayLabel")
+              .attr("x", -5)
+              .attr("y", function(d, i) { return i * (cellSize + cellPadding) + cellSize * 0.7; })
+              .style("text-anchor", "end")
+              .style("font-size", cellSize * 0.7 + "px")
+              .style("fill", textColor)
+              .text(function(d) { return d; });
+          }
+          
+          // Add month labels if configured
+          if (showMonthLabels) {
+            var monthsInSection = new Set();
+            
+            // Determine which months are visible in this section
+            for (var w = 0; w < weeksInThisSection; w++) {
+              var weekStartDate = today.subtract((sectionStartWeek + w) * 7 + 6, 'day');
+              monthsInSection.add(weekStartDate.format('MMM'));
+            }
+            
+            var monthLabels = Array.from(monthsInSection);
+            var monthPositions = monthLabels.map(function(month, i) {
+              // Find the position of the first day of this month
+              for (var w = 0; w < weeksInThisSection; w++) {
+                var weekStartDate = today.subtract((sectionStartWeek + w) * 7 + 6, 'day');
+                if (weekStartDate.format('MMM') === month) {
+                  // Fix month label positioning to align with the new grid layout
+                  return w * (cellSize + cellPadding);
+                }
+              }
+              return i * 100; // Fallback
+            });
+            
+            sectionGroup.selectAll(".monthLabel")
+              .data(monthLabels)
+              .enter().append("text")
+              .attr("class", "monthLabel")
+              .attr("x", function(d, i) { return monthPositions[i]; })
+              .attr("y", -5)
+              .style("text-anchor", "start")
+              .style("font-size", cellSize * 0.8 + "px")
+              .style("fill", textColor)
+              .text(function(d) { return d; });
+          }
+          
+          // Create cells for each day in this section
+          // GitHub-style: weeks run horizontally (columns), days run vertically (rows)
+          for (var w = 0; w < weeksInThisSection; w++) {
+            for (var d = 0; d < 7; d++) {
+              var dayOffset = (sectionStartWeek + w) * 7 + d;
+              var cellDate = today.subtract(dayOffset, 'day');
+              var dateStr = cellDate.format('YYYY-MM-DD');
+              
+              // Find data for this date
+              var dataForDate = that.parsed.find(function(item) {
+                return item.date.format('YYYY-MM-DD') === dateStr;
+              });
+              
+              var value = dataForDate ? dataForDate.value : 0;
+              var fillColor = value > 0 ? colorScale(value) : emptyColor;
+              
+              // GitHub-style grid layout: weeks as columns, days as rows
+              sectionGroup.append("rect")
+                .attr("x", w * (cellSize + cellPadding))
+                .attr("y", d * (cellSize + cellPadding))
+                .attr("width", cellSize)
+                .attr("height", cellSize)
+                .attr("rx", 2)
+                .attr("ry", 2)
+                .style("fill", fillColor)
+                .attr("data-date", dateStr)
+                .attr("data-value", value)
+                .on("mouseover", function(event) {
+                  var rect = d3.select(this);
+                  var date = rect.attr("data-date");
+                  var value = rect.attr("data-value");
+                  
+                  // Format date for display
+                  var formattedDate = dayjs(date).format('YYYY-MM-DD (ddd)');
+                  var commitText = value == 1 ? "1 commit" : value + " commits";
+                  
+                  d3.select(globalOpt.root).select(".tooltip")
+                    .style("visibility", "visible")
+                    .html(formattedDate + "<br>" + commitText)
+                    .style("left", (event.pageX + 10) + "px")
+                    .style("top", (event.pageY - 28) + "px");
+                })
+                .on("mouseout", function() {
+                  d3.select(globalOpt.root).select(".tooltip")
+                    .style("visibility", "hidden");
+                });
+            }
+          }
+        }
+      },
+      destroy: function() {
+        // Clean up any resources
+        if (this.svg) {
+          d3.select(this.svg).selectAll("*").remove();
+        }
+      }
+    }});
+  }
+};
+</script>
+</div>

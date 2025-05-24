@@ -1,0 +1,652 @@
+<div>
+<script type="@plotdb/block">
+module.exports = {
+  pkg: {
+    extend: {ns: "local", name: "chartbase", path: "index.html", version: "main"},
+    dependencies: [
+      {url: "https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"},
+      {url: "https://cdn.jsdelivr.net/npm/d3-sankey@0.12.3/dist/d3-sankey.min.js"},
+      {name: "ldcolor"}
+    ]
+  },
+  init: function(opt) {
+    var d3 = opt.ctx.d3;
+    var ldcolor = opt.ctx.ldcolor;
+    var root = opt.root;
+    var data = null;
+    var timePoints = [];
+    var animationRunning = false;
+    var sankey = null;
+    var svg = null;
+    var width = 0;
+    var height = 0;
+    var margin = {top: 40, right: 60, bottom: 40, left: 40};
+    var timeLabel = null;
+    var nodes = [];
+    var links = [];
+    var colorScale = null;
+    var nodeById = new Map();
+    var linksByTimeAndId = new Map();
+    var parsedData = null;
+    var isFirstRender = true;
+    var animationTimeoutId = null; // Store timeout ID to prevent multiple animations
+    
+    // New animation variables
+    var animationStartTime = 0;
+    var minYear = 0;
+    var maxYear = 0;
+    var totalAnimationDuration = 10000; // 10 seconds to complete full cycle by default
+    
+    // Function to create interpolated data for a specific point in time
+    function createInterpolatedDataForTime(yearProgress) {
+      // Find the floor and ceiling years
+      var floorYear = Math.floor(yearProgress);
+      var ceilingYear = Math.ceil(yearProgress);
+      var fraction = yearProgress - floorYear;
+      
+      // Handle edge case where yearProgress is exactly an integer
+      if (fraction === 0) {
+        ceilingYear = floorYear;
+      }
+      
+      // Ensure years are within our data range
+      floorYear = Math.max(minYear, Math.min(maxYear, floorYear));
+      ceilingYear = Math.max(minYear, Math.min(maxYear, ceilingYear));
+      
+      // Get data for floor and ceiling years
+      var floorData = parsedData[floorYear];
+      var ceilingData = parsedData[ceilingYear];
+      
+      // If we don't have data for these years, return null
+      if (!floorData || !ceilingData) {
+        // Missing data for interpolation
+        return null;
+      }
+      
+      // If floor and ceiling are the same, just return that data
+      if (floorYear === ceilingYear) {
+        return {
+          time: floorYear,
+          data: floorData
+        };
+      }
+      
+      // Create a map of all unique link IDs across both time points
+      var allLinkIds = new Set();
+      var floorLinks = floorData.links;
+      var ceilingLinks = ceilingData.links;
+      
+      floorLinks.forEach(link => {
+        allLinkIds.add(`${link.source}-${link.target}`);
+      });
+      
+      ceilingLinks.forEach(link => {
+        allLinkIds.add(`${link.source}-${link.target}`);
+      });
+      
+      // Create interpolated links
+      var interpolatedLinks = [];
+      
+      allLinkIds.forEach(id => {
+        var floorLink = floorLinks.find(link => `${link.source}-${link.target}` === id);
+        var ceilingLink = ceilingLinks.find(link => `${link.source}-${link.target}` === id);
+        
+        if (floorLink && ceilingLink) {
+          // Both floor and ceiling have this link, interpolate the value
+          var interpolatedValue = floorLink.value + (ceilingLink.value - floorLink.value) * fraction;
+          interpolatedLinks.push({
+            source: floorLink.source,
+            target: floorLink.target,
+            value: interpolatedValue,
+            id: id
+          });
+        } else if (floorLink) {
+          // Only floor has this link, fade it out
+          var interpolatedValue = floorLink.value * (1 - fraction);
+          if (interpolatedValue > 0.1) { // Only include if value is significant
+            interpolatedLinks.push({
+              source: floorLink.source,
+              target: floorLink.target,
+              value: interpolatedValue,
+              id: id
+            });
+          }
+        } else if (ceilingLink) {
+          // Only ceiling has this link, fade it in
+          var interpolatedValue = ceilingLink.value * fraction;
+          if (interpolatedValue > 0.1) { // Only include if value is significant
+            interpolatedLinks.push({
+              source: ceilingLink.source,
+              target: ceilingLink.target,
+              value: interpolatedValue,
+              id: id
+            });
+          }
+        }
+      });
+      
+      // Return the interpolated data
+      return {
+        time: yearProgress,
+        data: {
+          nodes: floorData.nodes, // Use nodes from floor data
+          links: interpolatedLinks
+        }
+      };
+    }
+    
+    opt.pubsub.fire("init", {mod: {
+      config: {
+        animationDuration: {
+          name: "動畫總時長(秒)",
+          type: "number",
+          default: 10,
+          min: 1,
+          max: 60,
+          step: 1
+        },
+        nodeWidth: {
+          name: "節點寬度", 
+          type: "number", 
+          default: 15, 
+          min: 5, 
+          max: 50, 
+          step: 1
+        },
+        nodePadding: {
+          name: "節點間距", 
+          type: "number", 
+          default: 10, 
+          min: 0, 
+          max: 50, 
+          step: 1
+        },
+        iterations: {
+          name: "疊代次數", 
+          type: "number", 
+          default: 6, 
+          min: 1, 
+          max: 32, 
+          step: 1
+        },
+        linkOpacity: {
+          name: "連結透明度", 
+          type: "number", 
+          default: 0.5, 
+          min: 0.1, 
+          max: 1, 
+          step: 0.1
+        },
+        nodeOpacity: {
+          name: "節點透明度", 
+          type: "number", 
+          default: 0.8, 
+          min: 0.1, 
+          max: 1, 
+          step: 0.1
+        },
+        palette: {
+          name: "色盤", 
+          type: "palette", 
+          default: {
+            colors: ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf"]
+          }
+        },
+        showNodeLabels: {
+          name: "顯示節點標籤", 
+          type: "choice", 
+          values: ["all", "left", "right", "none"], 
+          default: "all"
+        },
+        labelFontSize: {
+          name: "標籤字體大小", 
+          type: "number", 
+          default: 10, 
+          min: 8, 
+          max: 16, 
+          step: 1
+        },
+        timeFormat: {
+          name: "時間格式", 
+          type: "text", 
+          default: "%Y"
+        }
+      },
+      dimension: {
+        source: {},
+        target: {},
+        value: {},
+        time: {}
+      },
+      init: function() {
+        // Create SVG
+        svg = d3.select(this.svg);
+        
+        // Create time label
+        timeLabel = svg.append("text")
+          .attr("class", "time-label")
+          .attr("text-anchor", "middle")
+          .attr("font-size", "16px")
+          .attr("font-weight", "bold");
+        
+        // Initialize Sankey generator if d3.sankey is available
+        if (d3.sankey) {
+          sankey = d3.sankey()
+            .nodeId(d => d.id);
+        } else {
+          // d3.sankey is not available yet. Will try to initialize later.
+        }
+        
+        // Reset animation variables
+        animationRunning = true;
+        
+        // Clear any existing animation
+        if (animationTimeoutId) {
+          clearTimeout(animationTimeoutId);
+          animationTimeoutId = null;
+        }
+        
+        // Set animation start time
+        animationStartTime = Date.now();
+        totalAnimationDuration = this.cfg.animationDuration * 1000;
+        
+        // Start animation
+        var self = this;
+        animationTimeoutId = setTimeout(function() {
+          self.start();
+          self.tick(); // Start the tick loop
+        }, 500);
+      },
+      sample: function() {
+        // Sample data for power generation by source, type, and usage
+        var years = [2010, 2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023];
+        var sampleData = [];
+        
+        // First layer: energy sources to generation types
+        var sourceToTypeConnections = [
+          {source: "煤炭", target: "火力發電", values: [350, 340, 330, 320, 310, 300, 290, 280, 270, 260, 250, 240, 230, 220]},
+          {source: "天然氣", target: "火力發電", values: [150, 160, 170, 180, 190, 200, 210, 220, 230, 240, 250, 260, 270, 280]},
+          {source: "石油", target: "火力發電", values: [120, 115, 110, 105, 100, 95, 90, 85, 80, 75, 70, 65, 60, 55]},
+          {source: "核能", target: "核能發電", values: [220, 215, 210, 205, 200, 195, 190, 185, 180, 175, 170, 165, 160, 155]},
+          {source: "太陽能", target: "再生能源", values: [10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75]},
+          {source: "風力", target: "再生能源", values: [5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70]},
+          {source: "水力", target: "再生能源", values: [40, 42, 44, 46, 48, 50, 52, 54, 56, 58, 60, 62, 64, 66]},
+          {source: "生質能", target: "再生能源", values: [8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32, 34]}
+        ];
+        
+        // Second layer: generation types to usage
+        var typeToUsageConnections = [
+          // Fire power to usage
+          {source: "火力發電", target: "工業用電", percentage: [0.6, 0.59, 0.58, 0.57, 0.56, 0.55, 0.54, 0.53, 0.52, 0.51, 0.5, 0.49, 0.48, 0.47]},
+          {source: "火力發電", target: "民生用電", percentage: [0.3, 0.31, 0.32, 0.33, 0.34, 0.35, 0.36, 0.37, 0.38, 0.39, 0.4, 0.41, 0.42, 0.43]},
+          {source: "火力發電", target: "商業用電", percentage: [0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1]},
+          
+          // Nuclear power to usage
+          {source: "核能發電", target: "工業用電", percentage: [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]},
+          {source: "核能發電", target: "民生用電", percentage: [0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3]},
+          {source: "核能發電", target: "商業用電", percentage: [0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2]},
+          
+          // Renewable energy to usage
+          {source: "再生能源", target: "工業用電", percentage: [0.3, 0.31, 0.32, 0.33, 0.34, 0.35, 0.36, 0.37, 0.38, 0.39, 0.4, 0.41, 0.42, 0.43]},
+          {source: "再生能源", target: "民生用電", percentage: [0.4, 0.41, 0.42, 0.43, 0.44, 0.45, 0.46, 0.47, 0.48, 0.49, 0.5, 0.51, 0.52, 0.53]},
+          {source: "再生能源", target: "商業用電", percentage: [0.3, 0.28, 0.26, 0.24, 0.22, 0.2, 0.18, 0.16, 0.14, 0.12, 0.1, 0.08, 0.06, 0.04]}
+        ];
+        
+        // Create first layer connections: source to type
+        sourceToTypeConnections.forEach(conn => {
+          years.forEach((year, i) => {
+            sampleData.push({
+              source: conn.source,
+              target: conn.target,
+              value: conn.values[i],
+              time: year
+            });
+          });
+        });
+        
+        // Create second layer connections: type to usage
+        typeToUsageConnections.forEach(conn => {
+          years.forEach((year, i) => {
+            // Calculate the total value for this source (generation type) in this year
+            var sourceTotal = 0;
+            sourceToTypeConnections.forEach(firstConn => {
+              if (firstConn.target === conn.source) {
+                sourceTotal += firstConn.values[i];
+              }
+            });
+            
+            // Calculate the value for this connection based on percentage
+            var value = sourceTotal * conn.percentage[i];
+            
+            sampleData.push({
+              source: conn.source,
+              target: conn.target,
+              value: value,
+              time: year
+            });
+          });
+        });
+        
+        return {
+          raw: sampleData,
+          binding: {
+            source: {key: "source"},
+            target: {key: "target"},
+            value: {key: "value"},
+            time: {key: "time"}
+          }
+        };
+      },
+      bind: function() {
+        // Ensure we have data
+        if (!this.data || this.data.length === 0) {
+          // If no data, use sample data
+          var sample = this.sample();
+          this.data = sample.raw.map(d => ({
+            source: d.source,
+            target: d.target,
+            value: d.value,
+            time: d.time
+          }));
+        }
+        
+        data = this.data;
+        
+        // Extract unique time points and sort them
+        timePoints = Array.from(new Set(data.map(d => d.time))).sort((a, b) => a - b);
+        
+        // Set min and max years for animation
+        minYear = timePoints[0];
+        maxYear = timePoints[timePoints.length - 1];
+        
+        
+        // Reset animation state
+        animationRunning = true;
+        animationStartTime = Date.now();
+        totalAnimationDuration = this.cfg.animationDuration * 1000;
+        
+        // Process data for each time point
+        parsedData = {};
+        
+        // Extract all unique nodes
+        var allNodes = new Set();
+        data.forEach(d => {
+          allNodes.add(d.source);
+          allNodes.add(d.target);
+        });
+        
+        // Create node objects
+        nodes = Array.from(allNodes).map(id => ({id: id}));
+        nodeById.clear();
+        nodes.forEach(node => nodeById.set(node.id, node));
+        
+        // Process links for each time point
+        linksByTimeAndId.clear();
+        timePoints.forEach(time => {
+          var timeData = data.filter(d => d.time === time);
+          var timeLinks = timeData.map((d, i) => ({
+            source: d.source,
+            target: d.target,
+            value: d.value,
+            id: `${d.source}-${d.target}`
+          }));
+          
+          // Store links by time and id for easy lookup
+          var linksMap = new Map();
+          timeLinks.forEach(link => {
+            linksMap.set(link.id, link);
+          });
+          linksByTimeAndId.set(time, linksMap);
+          
+          parsedData[time] = {
+            nodes: nodes,
+            links: timeLinks
+          };
+        });
+        
+        // Create color scale for nodes
+        colorScale = d3.scaleOrdinal()
+          .domain(nodes.map(d => d.id))
+          .range(this.cfg.palette.colors.map(c => typeof c === 'string' ? c : ldcolor.hex(c)));
+      },
+      
+      resize: function() {
+        width = this.box.width - margin.left - margin.right;
+        height = this.box.height - margin.top - margin.bottom;
+        
+        svg.attr("width", this.box.width)
+          .attr("height", this.box.height);
+        
+        // Position time label
+        timeLabel
+          .attr("x", this.box.width / 2)
+          .attr("y", margin.top / 2);
+        
+        // Try to initialize sankey if it wasn't available during init
+        if (!sankey && d3.sankey) {
+          sankey = d3.sankey()
+            .nodeId(d => d.id);
+        }
+        
+        // Update Sankey generator dimensions if available
+        if (sankey) {
+          sankey
+            .nodeWidth(this.cfg.nodeWidth)
+            .nodePadding(this.cfg.nodePadding)
+            .extent([[margin.left, margin.top], [width + margin.left, height + margin.top - margin.bottom]])
+            .iterations(this.cfg.iterations);
+        }
+      },
+      render: function() {
+        // Check if we have all necessary components
+        if (!data || timePoints.length === 0 || !sankey) return;
+        
+        // Try to initialize sankey if it wasn't available earlier
+        if (!sankey && d3.sankey) {
+          sankey = d3.sankey()
+            .nodeId(d => d.id);
+          this.resize(); // Update dimensions
+        }
+        
+        // If still no sankey, we can't render
+        if (!sankey) return;
+        
+        // Get current time point based on elapsed time
+        var elapsedTime = Date.now() - animationStartTime;
+        var cycleProgress = (elapsedTime % totalAnimationDuration) / totalAnimationDuration;
+        var yearRange = maxYear - minYear;
+        
+        // Check if we're at the very end of the cycle (within a small threshold)
+        var endThreshold = 0.99;
+        var interpolationResult;
+        
+        if (cycleProgress > endThreshold) {
+          // Reset animation to start instantly
+          animationStartTime = Date.now();
+          // Use exact data from the first time point without interpolation
+          interpolationResult = {
+            time: minYear,
+            data: parsedData[minYear]
+          };
+        } else {
+          // Normal progression
+          var yearProgress = cycleProgress * yearRange + minYear;
+          // Create interpolated data for current time
+          interpolationResult = createInterpolatedDataForTime(yearProgress);
+        }
+        
+        if (!interpolationResult) {
+          // Failed to create interpolated data
+          return;
+        }
+        
+        var currentTime = interpolationResult.time;
+        var currentData = interpolationResult.data;
+        
+        // Update time label
+        var formatTime = d3.timeFormat(this.cfg.timeFormat);
+        try {
+          // Try to format as date if it's a number (year)
+          if (typeof currentTime === 'number') {
+            timeLabel.text(formatTime(new Date(currentTime, 0, 1)));
+          } else {
+            // Otherwise just display as is
+            timeLabel.text(currentTime);
+          }
+        } catch (e) {
+          // Fallback if formatting fails
+          timeLabel.text(currentTime);
+        }
+        
+        // Compute the Sankey layout
+        var sankeyData;
+        try {
+          sankeyData = sankey(currentData);
+        } catch (e) {
+          // Error computing Sankey layout
+          return;
+        }
+        var sankeyNodes = sankeyData.nodes;
+        var sankeyLinks = sankeyData.links;
+        
+        // Create or update node groups
+        var nodeGroups = svg.selectAll(".node")
+          .data(sankeyNodes, d => d.id);
+        
+        // Remove old nodes
+        nodeGroups.exit().remove();
+        
+        // Add new nodes
+        var newNodes = nodeGroups.enter()
+          .append("g")
+          .attr("class", "node");
+        
+        // Add node rectangles
+        newNodes.append("rect")
+          .attr("class", "node-rect");
+        
+        // Add node labels
+        newNodes.append("text")
+          .attr("class", "node-label")
+          .attr("dy", ".35em");
+        
+        // Merge and update all nodes
+        nodeGroups = newNodes.merge(nodeGroups);
+        
+        // Update node rectangles - set values directly without transitions
+        var nodeRectUpdate = nodeGroups.select("rect.node-rect");
+        nodeRectUpdate
+          .attr("x", d => d.x0)
+          .attr("y", d => d.y0)
+          .attr("height", d => Math.max(0, d.y1 - d.y0))
+          .attr("width", d => Math.max(0, d.x1 - d.x0))
+          .attr("fill", d => typeof colorScale === 'function' ? colorScale(d.id) : "#999")
+          .attr("opacity", this.cfg.nodeOpacity);
+        
+        // Update node labels - set values directly without transitions
+        var nodeLabelUpdate = nodeGroups.select("text.node-label");
+        nodeLabelUpdate
+          .attr("x", d => d.x0 < width / 2 ? d.x1 + 6 : d.x0 - 6)
+          .attr("y", d => (d.y1 + d.y0) / 2)
+          .attr("text-anchor", d => d.x0 < width / 2 ? "start" : "end")
+          .attr("font-size", this.cfg.labelFontSize + "px")
+          .text(d => {
+            if (this.cfg.showNodeLabels === "none") return "";
+            if (this.cfg.showNodeLabels === "left" && d.x0 >= width / 2) return "";
+            if (this.cfg.showNodeLabels === "right" && d.x0 < width / 2) return "";
+            return d.id;
+          });
+        
+        // Create or update links
+        var linkGroups = svg.selectAll(".link")
+          .data(sankeyLinks, d => `${d.source.id}-${d.target.id}`);
+        
+        // Remove old links
+        linkGroups.exit().remove();
+        
+        // Add new links
+        var newLinks = linkGroups.enter()
+          .append("path")
+          .attr("class", "link");
+        
+        // Merge and update all links
+        linkGroups = newLinks.merge(linkGroups);
+        
+        // Update links - set values directly without transitions
+        linkGroups
+          .attr("d", d3.sankeyLinkHorizontal())
+          .attr("stroke-width", d => Math.max(0, d.width))
+          .attr("stroke", d => typeof colorScale === 'function' ? colorScale(d.source.id) : "#999")
+          .attr("stroke-opacity", this.cfg.linkOpacity)
+          .attr("fill", "none");
+      },
+      tick: function() {
+        // Clear any existing animation
+        if (animationTimeoutId) {
+          clearTimeout(animationTimeoutId);
+          animationTimeoutId = null;
+        }
+        
+        if (!animationRunning) {
+          return;
+        }
+        
+        // Check if we need to restart the animation (e.g., after settings change)
+        if (totalAnimationDuration !== this.cfg.animationDuration * 1000) {
+          totalAnimationDuration = this.cfg.animationDuration * 1000;
+          animationStartTime = Date.now();
+        }
+        
+        // No need to calculate current time from timeIndex anymore
+        // We'll use yearProgress directly in render()
+        
+        // Render with current data
+        this.render();
+        
+        // Schedule next update with a fixed frame rate
+        var self = this;
+        var frameDelay = 16; // ~60fps
+        
+        // Get current time point based on elapsed time
+        var elapsedTime = Date.now() - animationStartTime;
+        var cycleProgress = (elapsedTime % totalAnimationDuration) / totalAnimationDuration;
+        var yearRange = maxYear - minYear;
+        
+        // Check if we're at the very end of the cycle (within a small threshold)
+        var endThreshold = 0.99;
+        if (cycleProgress > endThreshold) {
+          // Reset animation to start instantly
+          animationStartTime = Date.now();
+          // No need to set yearProgress here as we'll use exact data in render()
+        }
+      },
+      
+      destroy: function() {
+        // Stop animation
+        animationRunning = false;
+        
+        // Clear any existing animation timeout
+        if (animationTimeoutId) {
+          clearTimeout(animationTimeoutId);
+          animationTimeoutId = null;
+        }
+        
+        this.stop();
+        
+        // Clean up
+        if (svg) {
+          svg.selectAll("*").remove();
+        }
+        
+        // Clear data
+        data = null;
+        timePoints = [];
+        nodeById.clear();
+        linksByTimeAndId.clear();
+        parsedData = null;
+      }
+    }});
+  }
+};
+</script>
+</div>

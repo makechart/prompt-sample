@@ -1,0 +1,302 @@
+<div>
+<script type="@plotdb/block">
+module.exports = {
+  pkg: {
+    extend: {ns: "local", name: "chartbase", path: "index.html", version: "main"},
+    dependencies: [
+      {url: "https://d3js.org/d3.v7.min.js"},
+      {url: "https://cdn.jsdelivr.net/npm/ldcolor@1.1.2/index.min.js"}
+    ]
+  },
+  init: function(opt) {
+    var d3 = opt.ctx.d3;
+    var ldcolor = opt.ctx.ldcolor;
+    
+    // Pass the mod object
+    opt.pubsub.fire("init", {mod: {
+      config: {
+        radius: {name: "圓點半徑", type: "number", min: 3, max: 20, default: 10, step: 1},
+        padding: {name: "圓點間距", type: "number", min: 1, max: 10, default: 2, step: 0.5},
+        innerRadius: {name: "內圓半徑比例", type: "number", min: 0.1, max: 0.9, default: 0.4, step: 0.05},
+        outerRadius: {name: "外圓半徑比例", type: "number", min: 0.5, max: 1, default: 0.9, step: 0.05},
+        startAngle: {name: "起始角度", type: "number", min: -180, max: 0, default: -180, step: 5},
+        endAngle: {name: "結束角度", type: "number", min: 0, max: 180, default: 0, step: 5},
+        showLegend: {name: "顯示圖例", type: "choice", values: ["yes", "no"], default: "yes"},
+        legendPosition: {name: "圖例位置", type: "choice", values: ["top", "bottom"], default: "bottom"},
+        palette: {name: "政黨顏色", type: "palette", default: {colors: ["#1B9431", "#000095", "#FF0000", "#FFA500", "#800080", "#008080"]}}
+      },
+      dimension: {
+        party: {},
+        seats: {}
+      },
+      init: function() {
+        this.parsed = null;
+        
+        // Create D3 selection for the SVG (this.svg is provided by chartbase)
+        this.svgalt = d3.select(this.svg);
+        
+        // Create a group for the parliament chart
+        this.g = document.createElementNS("http://www.w3.org/2000/svg", "g");
+        this.g.setAttribute("class", "parliament-seats");
+        this.svg.appendChild(this.g);
+        
+        // Create a group for the legend
+        this.legend = document.createElementNS("http://www.w3.org/2000/svg", "g");
+        this.legend.setAttribute("class", "legend");
+        this.svg.appendChild(this.legend);
+      },
+      sample: function() {
+        return {
+          binding: {
+            party: {key: "party"},
+            seats: {key: "seats"}
+          },
+          raw: [
+            {party: "民主進步黨", seats: 61},
+            {party: "中國國民黨", seats: 38},
+            {party: "台灣民眾黨", seats: 8},
+            {party: "時代力量", seats: 3},
+            {party: "台灣基進", seats: 1},
+            {party: "無黨籍", seats: 2}
+          ]
+        };
+      },
+      bind: function() {
+        // Ensure we have data, or use sample data if none provided
+        if (!this.data || !this.data.length) {
+          var sample = this.sample();
+          this.data = sample.raw.map(function(d) {
+            return {party: d.party, seats: d.seats};
+          });
+        }
+        
+        // First sort the data by number of seats (descending)
+        var sortedData = this.data.slice().sort(function(a, b) {
+          return (+b.seats) - (+a.seats);
+        });
+        
+        // Then calculate indices based on the sorted data
+        var total = 0;
+        this.parsed = sortedData.map(function(d) {
+          var item = {
+            party: d.party,
+            seats: +d.seats,
+            start: total,
+            end: total + (+d.seats)
+          };
+          total += +d.seats; // Update the running total
+          return item;
+        });
+        
+        // Log the parsed data to verify start and end indices
+        console.log("Parsed party data with indices:", this.parsed);
+        
+        // Calculate total seats for later use
+        this.totalSeats = this.parsed.reduce(function(acc, d) {
+          return acc + d.seats;
+        }, 0);
+      },
+      resize: function() {
+        // This will be called automatically before render
+      },
+      render: function() {
+        var that = this;
+        if (!this.parsed) this.bind();
+        
+        // Create or update D3 selections from the DOM nodes
+        this.svgalt = d3.select(this.svg);
+        var gSelection = d3.select(this.g);
+        var legendSelection = d3.select(this.legend);
+        
+        // Get dimensions, ensure minimum size
+        var width = Math.max(300, this.svg.clientWidth || 300);
+        var height = Math.max(300, this.svg.clientHeight || 300);
+        var centerX = width / 2;
+        var centerY = height / 2; // Center vertically
+        
+        // Adjust centerY based on legend position
+        if (this.cfg.showLegend === "yes" && this.cfg.legendPosition === "bottom") {
+          centerY = height * 0.45; // Move up slightly to make room for legend at bottom
+        } else if (this.cfg.showLegend === "yes" && this.cfg.legendPosition === "top") {
+          centerY = height * 0.55; // Move down slightly if legend is at top
+        }
+        
+        // Clear previous elements
+        gSelection.selectAll("*").remove();
+        legendSelection.selectAll("*").remove();
+        
+        // Calculate the radius of the parliament to maximize space usage
+        var chartRadius = Math.min(width, height) / 2 * 0.95; // Use 95% of available space
+        var innerRadius = chartRadius * this.cfg.innerRadius;
+        
+        // Debug dimensions
+        console.log("Chart dimensions:", {
+          width: width,
+          height: height,
+          centerX: centerX,
+          centerY: centerY,
+          chartRadius: chartRadius,
+          innerRadius: innerRadius
+        });
+        
+        // Store angles in degrees for later conversion
+        var startAngle = this.cfg.startAngle;
+        var endAngle = this.cfg.endAngle;
+        
+        // Calculate the number of rows needed
+        var dotRadius = this.cfg.radius;
+        var dotPadding = this.cfg.padding;
+        var dotDiameter = dotRadius * 2 + dotPadding;
+        
+        // Get colors from palette
+        var colors = this.cfg.palette.colors.map(function(c) {
+          var webColor = ldcolor.web(c); // Use web format instead of hex for better compatibility
+          console.log("Converted color:", c, "to web color:", webColor);
+          return webColor;
+        });
+        
+        // Log the available colors
+        console.log("Available colors for parties:", colors);
+        
+        // Ensure we have enough colors by duplicating if necessary
+        while (colors.length < this.parsed.length) {
+          colors = colors.concat(colors);
+        }
+        
+        // Create a color scale
+        var colorScale = d3.scaleOrdinal()
+          .domain(this.parsed.map(function(d) { return d.party; }))
+          .range(colors);
+          
+        // Log the color mapping for each party
+        console.log("Color mapping for parties:");
+        this.parsed.forEach(function(d) {
+          console.log(d.party + " -> " + colorScale(d.party));
+        });
+        
+        // Calculate positions for all seats
+        var seats = [];
+        
+        // Ensure we have at least one row and calculate how many dots can fit in a row
+        var angleRange = Math.abs(endAngle - startAngle) * Math.PI / 180; // Convert to radians
+        var maxRowLength = Math.max(1, Math.floor(angleRange * innerRadius / dotDiameter));
+        
+        // Calculate how many rows we need
+        var rowCount = Math.ceil(this.totalSeats / maxRowLength);
+        
+        console.log("Seat distribution:", {
+          totalSeats: this.totalSeats,
+          maxRowLength: maxRowLength,
+          rowCount: rowCount
+        });
+        
+        // Distribute seats
+        for (var i = 0; i < this.totalSeats; i++) {
+          // Find which party this seat belongs to
+          var party = "未知黨派"; // Default party name if not found
+          var partyColor = "#333333"; // Default color if not found
+          
+          for (var j = 0; j < this.parsed.length; j++) {
+            if (i >= this.parsed[j].start && i < this.parsed[j].end) {
+              party = this.parsed[j].party;
+              partyColor = colorScale(party);
+              // Debug log to check color assignment
+              console.log("Seat " + i + " assigned to " + party + " with color " + partyColor);
+              break;
+            }
+          }
+          
+          // Calculate row and position within row
+          var row = Math.floor(i / maxRowLength);
+          var posInRow = i % maxRowLength;
+          
+          // Calculate radius for this row
+          var rowRadius = innerRadius + row * dotDiameter;
+          
+          // Calculate angle for this position (avoid division by zero)
+          var angle = startAngle * Math.PI / 180;
+          if (maxRowLength > 1) {
+            angle = (startAngle + (endAngle - startAngle) * (posInRow / (maxRowLength - 1))) * Math.PI / 180;
+          }
+          
+          // Calculate x and y (note: cos for x, sin for y in standard math, but we adjust for SVG coordinate system)
+          var x = centerX + rowRadius * Math.cos(angle);
+          var y = centerY + rowRadius * Math.sin(angle);
+          
+          seats.push({
+            x: x,
+            y: y,
+            party: party,
+            color: partyColor,
+            index: i
+          });
+        }
+        
+        console.log("Calculated seat positions:", seats.slice(0, 5)); // Log first 5 seats for debugging
+        
+        // Draw the seats
+        gSelection.selectAll("circle")
+          .data(seats)
+          .enter()
+          .append("circle")
+          .attr("cx", function(d) { return d.x; })
+          .attr("cy", function(d) { return d.y; })
+          .attr("r", dotRadius)
+          .attr("fill", function(d) {
+            return d.color || "#333333"; // Provide a fallback color if undefined
+          })
+          .attr("stroke", "#fff")
+          .attr("stroke-width", 1)
+          .attr("class", "seat")
+          .append("title") // Add tooltip with party name
+          .text(function(d) { return d.party + " (座位 #" + (d.index + 1) + ")"; });
+        
+        // Add legend if enabled
+        if (this.cfg.showLegend === "yes") {
+          // Calculate legend position
+          var legendY;
+          if (this.cfg.legendPosition === "top") {
+            legendY = 20; // Position closer to the top
+          } else {
+            // For bottom position, ensure it doesn't go off the bottom of the SVG
+            var legendHeight = this.parsed.length * 25;
+            legendY = Math.min(height - 20 - legendHeight, height - legendHeight);
+          }
+          
+          // Create legend items
+          var legendItems = legendSelection.selectAll(".legend-item")
+            .data(this.parsed)
+            .enter()
+            .append("g")
+            .attr("class", "legend-item")
+            .attr("transform", function(d, i) {
+              // Calculate legend width based on party name length
+              var estimatedWidth = (d.party.length * 10) + 50; // Rough estimate
+              return "translate(" + (centerX - estimatedWidth/2) + "," + (legendY + i * 25) + ")";
+            });
+          
+          legendItems.append("rect")
+            .attr("width", 18)
+            .attr("height", 18)
+            .attr("fill", function(d) { return colorScale(d.party); });
+          
+          legendItems.append("text")
+            .attr("x", 24)
+            .attr("y", 9)
+            .attr("dy", ".35em")
+            .text(function(d) { return d.party + " (" + d.seats + "席)"; });
+        }
+      },
+      destroy: function() {
+        // Clean up any resources
+        if (this.svg) {
+          // Use our stored D3 selection if available, otherwise create a new one
+          (this.svgalt || d3.select(this.svg)).selectAll("*").remove();
+          this.svgalt = null;
+        }
+      }
+    }});
+  }
+};
+</script>
+</div>

@@ -67,11 +67,12 @@
            render: function() {
              chart.resize();
            }
-         }}
+         }});
        }
      }
 
 以上為這個模組的基本規格. 請注意, `pkg` 中的 `extend` 為固定寫法, 會協助我們處理使用 `@plotdb/chart` 的初始化步驟，所以不可省略. 您可以注意到我在模組中 init 函式裡, 透過 `opt.pubsub.fire` 發送了一個 `init` 事件 (此事件將在 `chartbase` 中處理). 這個事件並帶了一個參數物件, 內部僅含一個成員參數 `mod`, 該參數本身也是一個物件, 這個物件是我們自行定義的圖表介面.
+
 
 ## 基本框架
 
@@ -95,9 +96,46 @@
            init: function() {
              a == this; /* will be false */
            }
+         }});
       }
     }
 
+此外, 模組預定義的函式包括 init, sample, parse, bind, render, resize, destroy 等等函式, 他們在被執行時, 會由 caller 使用如 `init.apply(someOtherObj, ...)` 的方式代換其 this 物件, 因此您將無法直接使用 `this` 存取到您自行定義的成員, 如下:
+
+    {
+      pkg: {....},
+      init: function() {
+         opt.pubsub.fire("init", {mod: mod = {
+           init: function() {
+             this.custom(); /* 這行會出錯 */
+             mod.custom(); /* 這樣呼叫的話, 在 custom 中的 `this` 會是 `mod`  */
+             mod.custom.apply(this); /* 這樣寫則能將環境提供的資料帶至 custom 中 */
+           }
+           custom: function() { 
+           }
+         }});
+      }
+    }
+
+若您有額外的自定函式需要實作，建議您另外在模組 init 函式下建立一個區域物件來管理，例如：
+
+    {
+      pkg: {....},
+      init: function() {
+         var local = {
+           custom: function() { ... }
+         };
+         opt.pubsub.fire("init", {mod: mod = {
+           init: function() {
+             local.custom.apply(this);
+           }
+         }});
+      }
+    }
+
+
+
+    
 
 ## 人機介面定義規格
 
@@ -234,7 +272,7 @@ this.cfg 中若有 palette type 的設定, palette.colors 裡的數據可能會�
 ldcolor 可以透過 dependencies 載入:
 
     dependencies: [
-      {name: "ldcolor"},
+      {name: "ldcolor"}, /* 通常系統已提供 ldcolor, 您只要這樣寫, 系統便會自行找到正確的 URL */
     ]
     init: function(opt) {
       var ldcolor = opt.ctx.ldcolor;
